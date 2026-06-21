@@ -1,15 +1,19 @@
 import os
 import re
+import io
 import json
+import zipfile
+import posixpath
+import html as html_lib
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
-import requests
 import streamlit as st
 from openai import OpenAI
 
 
 # ============================================================
-# 基本设置
+# 页面设置
 # ============================================================
 
 st.set_page_config(
@@ -21,8 +25,6 @@ st.set_page_config(
 
 # ============================================================
 # OpenAI API 设置
-# 云端：从 Streamlit Secrets 读取 OPENAI_API_KEY
-# 本地：也可以从环境变量读取 OPENAI_API_KEY
 # ============================================================
 
 api_key = None
@@ -39,7 +41,7 @@ client = OpenAI(api_key=api_key) if api_key else None
 
 
 # ============================================================
-# 内置资料：人物 / 主题 / 关系
+# 基础资料
 # ============================================================
 
 DEFAULT_MODEL = "gpt-4.1-mini"
@@ -49,82 +51,82 @@ CHARACTERS = {
         "aliases": ["Alyosha", "Alexey", "Alexei", "阿廖沙", "阿列克谢"],
         "identity": "The youngest Karamazov brother; spiritually oriented, close to Zosima, often a listener and moral witness.",
         "core_conflict": "He wants to believe in active love and faith, but he is surrounded by corruption, suffering, sensuality, and intellectual rebellion.",
-        "keywords": ["faith", "active love", "compassion", "witness", "Zosima"],
+        "keywords": ["faith", "active love", "compassion", "witness", "Zosima", "信仰", "爱", "佐西马"],
     },
     "Dmitri / 德米特里": {
         "aliases": ["Dmitri", "Mitya", "Mitka", "德米特里", "米佳"],
         "identity": "The eldest Karamazov brother; passionate, impulsive, sensual, and caught in conflict over money, love, and guilt.",
         "core_conflict": "He is torn between sensual excess, jealousy, pride, guilt, and a desire for moral rebirth.",
-        "keywords": ["passion", "guilt", "jealousy", "honor", "Grushenka"],
+        "keywords": ["passion", "guilt", "jealousy", "honor", "Grushenka", "欲望", "罪感", "格鲁申卡"],
     },
     "Ivan / 伊万": {
         "aliases": ["Ivan", "Vanya", "伊万"],
         "identity": "The intellectual brother; skeptical, brilliant, tormented by God, evil, freedom, and responsibility.",
         "core_conflict": "He rejects easy faith because of innocent suffering, yet cannot escape moral responsibility for ideas and consequences.",
-        "keywords": ["reason", "atheism", "rebellion", "suffering", "responsibility"],
+        "keywords": ["reason", "atheism", "rebellion", "suffering", "responsibility", "理性", "无神论", "反抗", "苦难", "责任"],
     },
     "Fyodor Pavlovich / 老卡拉马佐夫": {
-        "aliases": ["Fyodor Pavlovich", "Fyodor", "老卡拉马佐夫", "费奥多尔"],
+        "aliases": ["Fyodor Pavlovich", "Fyodor", "老卡拉马佐夫", "费奥多尔", "费尧多尔"],
         "identity": "The father of the Karamazov brothers; vulgar, greedy, sensual, theatrical, and morally degraded.",
         "core_conflict": "He embodies corruption and irresponsibility, becoming the central object of hatred, inheritance conflict, and suspected parricide.",
-        "keywords": ["father", "sensuality", "money", "parricide", "degradation"],
+        "keywords": ["father", "sensuality", "money", "parricide", "degradation", "父亲", "弑父", "堕落", "金钱"],
     },
     "Smerdyakov / 斯麦尔佳科夫": {
-        "aliases": ["Smerdyakov", "Pavel", "斯麦尔佳科夫"],
+        "aliases": ["Smerdyakov", "Pavel", "斯麦尔佳科夫", "斯乜尔加科夫"],
         "identity": "A servant in Fyodor Pavlovich's house; resentful, calculating, and central to the murder plot.",
         "core_conflict": "He internalizes humiliation and resentment, then turns ideas about moral permission into destructive action.",
-        "keywords": ["servant", "resentment", "murder", "responsibility", "Ivan"],
+        "keywords": ["servant", "resentment", "murder", "responsibility", "Ivan", "仆人", "怨恨", "谋杀", "伊万"],
     },
     "Grushenka / 格鲁申卡": {
-        "aliases": ["Grushenka", "Agrafena", "格鲁申卡"],
+        "aliases": ["Grushenka", "Agrafena", "格鲁申卡", "格露莘卡"],
         "identity": "A charismatic woman desired by Dmitri and Fyodor Pavlovich; more complex than a simple temptress figure.",
         "core_conflict": "She is caught between wounded pride, desire, manipulation, revenge, and possible transformation.",
-        "keywords": ["desire", "wounded pride", "Dmitri", "Fyodor", "transformation"],
+        "keywords": ["desire", "wounded pride", "Dmitri", "Fyodor", "transformation", "欲望", "骄傲", "德米特里"],
     },
     "Katerina / 卡捷琳娜": {
-        "aliases": ["Katerina", "Katya", "Katerina Ivanovna", "卡捷琳娜"],
+        "aliases": ["Katerina", "Katya", "Katerina Ivanovna", "卡捷琳娜", "卡嘉"],
         "identity": "Dmitri's former fiancée; proud, morally intense, indebted, wounded, and emotionally bound to both Dmitri and Ivan.",
         "core_conflict": "She confuses sacrifice, pride, love, revenge, and moral superiority.",
-        "keywords": ["pride", "debt", "sacrifice", "Dmitri", "Ivan"],
+        "keywords": ["pride", "debt", "sacrifice", "Dmitri", "Ivan", "骄傲", "牺牲", "债", "伊万"],
     },
     "Zosima / 佐西马长老": {
-        "aliases": ["Zosima", "Father Zosima", "Elder Zosima", "佐西马"],
+        "aliases": ["Zosima", "Father Zosima", "Elder Zosima", "佐西马", "长老"],
         "identity": "A spiritual elder and Alyosha's mentor; teaches active love, humility, and universal responsibility.",
         "core_conflict": "His teachings answer moral decay and suffering, but are challenged by scandal, skepticism, and bodily mortality.",
-        "keywords": ["active love", "faith", "humility", "responsibility", "Alyosha"],
+        "keywords": ["active love", "faith", "humility", "responsibility", "Alyosha", "积极的爱", "信仰", "谦卑"],
     },
     "Ilyusha / 伊柳沙": {
         "aliases": ["Ilyusha", "Ilyushechka", "Ilyusha Snegiryov", "伊柳沙"],
         "identity": "A suffering child who draws together themes of innocence, cruelty, compassion, and moral education.",
         "core_conflict": "His suffering forces the novel to ask what love, guilt, and responsibility mean in relation to children.",
-        "keywords": ["children", "suffering", "innocence", "Alyosha", "schoolboys"],
+        "keywords": ["children", "suffering", "innocence", "Alyosha", "schoolboys", "儿童", "苦难", "无辜"],
     },
 }
 
 THEMES = {
     "Faith and Doubt / 信仰与怀疑": {
         "description": "The novel stages the conflict between religious faith, skeptical reason, rebellion against God, and active love.",
-        "keywords": ["God", "faith", "doubt", "atheism", "Zosima", "Alyosha", "Ivan"],
+        "keywords": ["God", "faith", "doubt", "atheism", "Zosima", "Alyosha", "Ivan", "上帝", "信仰", "怀疑", "无神论"],
     },
     "Parricide and Responsibility / 弑父与责任": {
         "description": "The murder plot is not only legal but moral: who desired the father's death, who acted, and who is responsible?",
-        "keywords": ["father", "murder", "parricide", "responsibility", "Dmitri", "Ivan", "Smerdyakov"],
+        "keywords": ["father", "murder", "parricide", "responsibility", "Dmitri", "Ivan", "Smerdyakov", "父亲", "谋杀", "弑父", "责任"],
     },
     "Suffering of Children / 儿童苦难": {
         "description": "The suffering of innocent children is central to Ivan's rebellion and to the novel's moral test of faith and love.",
-        "keywords": ["children", "child", "Ilyusha", "suffering", "innocent", "tears"],
+        "keywords": ["children", "child", "Ilyusha", "suffering", "innocent", "tears", "儿童", "孩子", "苦难", "无辜", "眼泪"],
     },
     "Sensuality and Desire / 欲望与堕落": {
         "description": "The Karamazov world is driven by money, erotic rivalry, humiliation, and bodily appetite.",
-        "keywords": ["sensual", "desire", "money", "jealousy", "Grushenka", "Dmitri", "Fyodor"],
+        "keywords": ["sensual", "desire", "money", "jealousy", "Grushenka", "Dmitri", "Fyodor", "欲望", "金钱", "嫉妒"],
     },
     "Pride and Humiliation / 骄傲与羞辱": {
         "description": "Love is often mixed with pride, debt, revenge, public moral performance, and humiliation.",
-        "keywords": ["pride", "humiliation", "Katerina", "Grushenka", "Dmitri", "Ivan"],
+        "keywords": ["pride", "humiliation", "Katerina", "Grushenka", "Dmitri", "Ivan", "骄傲", "羞辱", "复仇"],
     },
     "Active Love / 积极的爱": {
         "description": "Zosima and Alyosha represent concrete active love rather than abstract doctrine or theatrical morality.",
-        "keywords": ["active love", "love", "Zosima", "Alyosha", "responsibility", "humility"],
+        "keywords": ["active love", "love", "Zosima", "Alyosha", "responsibility", "humility", "积极的爱", "爱", "责任", "谦卑"],
     },
 }
 
@@ -160,12 +162,6 @@ ROMAN_MAP = {
     "XII": 12,
 }
 
-
-# ============================================================
-# 内置演示章节
-# 这部分不需要联网，所以网页能秒开。
-# 用户之后可以手动加载 Gutenberg 全书。
-# ============================================================
 
 DEMO_SECTIONS = [
     {
@@ -256,14 +252,14 @@ def init_state():
         st.session_state.book_loaded = False
 
     if "load_message" not in st.session_state:
-        st.session_state.load_message = "当前使用内置演示资料。网页不会在启动时联网，所以不会卡死。"
+        st.session_state.load_message = "当前使用内置演示资料。请在首页上传你电脑里的 EPUB 或 TXT。"
 
 
 init_state()
 
 
 # ============================================================
-# 工具函数
+# 基础工具函数
 # ============================================================
 
 def safe_join(items, sep="、"):
@@ -318,7 +314,7 @@ def detect_themes(text):
 
     for name, data in THEMES.items():
         for keyword in data["keywords"]:
-            if keyword.lower() in lower:
+            if keyword.lower() in lower or keyword in text:
                 found.append(name)
                 break
 
@@ -326,134 +322,346 @@ def detect_themes(text):
 
 
 # ============================================================
-# Gutenberg 下载与解析：只在用户点击按钮后运行
+# 本地 EPUB / TXT 解析
 # ============================================================
 
-@st.cache_data(show_spinner=False)
-def fetch_gutenberg_text():
-    urls = [
-        "https://www.gutenberg.org/cache/epub/28054/pg28054.txt",
-        "https://www.gutenberg.org/files/28054/28054-0.txt",
-    ]
-
-    headers = {"User-Agent": "karamazov-interactive-archive"}
-
-    last_error = ""
-
-    for url in urls:
-        try:
-            response = requests.get(url, timeout=20, headers=headers)
-            if response.status_code == 200 and "Karamazov" in response.text:
-                return response.text, f"成功读取：{url}"
-            last_error = f"HTTP {response.status_code} from {url}"
-        except Exception as e:
-            last_error = str(e)
-
-    return "", f"读取失败：{last_error}"
-
-
-def strip_boilerplate(text):
-    if not text:
+def html_to_text(raw_html):
+    if not raw_html:
         return ""
 
-    start = re.search(r"\*\*\*\s*START OF .*?EBOOK.*?\*\*\*", text, re.I | re.S)
-    end = re.search(r"\*\*\*\s*END OF .*?EBOOK.*?\*\*\*", text, re.I | re.S)
+    text = raw_html
 
-    if start:
-        text = text[start.end():]
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<nav.*?>.*?</nav>", " ", text)
 
-    if end:
-        text = text[:end.start()]
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
+    text = re.sub(r"(?i)</div\s*>", "\n", text)
+    text = re.sub(r"(?i)</h[1-6]\s*>", "\n\n", text)
+    text = re.sub(r"(?i)</li\s*>", "\n", text)
 
-    return text.strip()
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    return "\n\n".join(lines).strip()
 
 
-@st.cache_data(show_spinner=False)
-def parse_sections(raw_text):
-    text = strip_boilerplate(raw_text)
+def extract_title_from_html(raw_html, fallback):
+    if not raw_html:
+        return fallback
 
-    if not text:
-        return []
+    patterns = [
+        r"(?is)<h1[^>]*>(.*?)</h1>",
+        r"(?is)<h2[^>]*>(.*?)</h2>",
+        r"(?is)<h3[^>]*>(.*?)</h3>",
+        r"(?is)<title[^>]*>(.*?)</title>",
+    ]
 
-    lines = text.splitlines()
+    for pattern in patterns:
+        match = re.search(pattern, raw_html)
+        if match:
+            title = html_to_text(match.group(1))
+            title = re.sub(r"\s+", " ", title).strip()
+            if 2 <= len(title) <= 120:
+                return title
 
-    current_part = ""
-    current_book = ""
-    current_book_number = 0
-    current_chapter = ""
-    current_lines = []
+    return fallback
+
+
+def decode_bytes(data):
+    for enc in ["utf-8", "utf-8-sig", "gb18030", "big5", "latin-1"]:
+        try:
+            return data.decode(enc)
+        except Exception:
+            pass
+    return data.decode("utf-8", errors="ignore")
+
+
+def infer_book_number(title, text, fallback_index):
+    sample = f"{title}\n{text[:800]}"
+
+    match = re.search(r"\bBook\s+([IVX]+)\b", sample, re.I)
+    if match:
+        value = roman_to_int(match.group(1))
+        if value:
+            return value
+
+    chinese_map = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "十一": 11,
+        "十二": 12,
+    }
+
+    match = re.search(r"第(十一|十二|十|一|二|三|四|五|六|七|八|九)卷", sample)
+    if match:
+        return chinese_map.get(match.group(1), fallback_index)
+
+    return fallback_index
+
+
+def split_text_by_chapter_markers(section):
+    title = section["title"]
+    text = section["text"]
+
+    pattern = re.compile(
+        r"(?m)^(Chapter\s+[IVXLC]+\b.*?|第[一二三四五六七八九十百零〇\d]+章.*?|第[一二三四五六七八九十百零〇\d]+回.*?)$",
+        re.I,
+    )
+
+    matches = list(pattern.finditer(text))
+
+    if len(matches) < 2:
+        return [section]
+
+    result = []
+
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+        chapter_title = re.sub(r"\s+", " ", match.group(1)).strip()
+        chapter_text = text[start:end].strip()
+
+        if len(chapter_text) < 100:
+            continue
+
+        result.append(
+            {
+                "title": f"{title} | {chapter_title}",
+                "book_number": section.get("book_number", 1),
+                "source": section.get("source", ""),
+                "text": chapter_text,
+            }
+        )
+
+    return result if result else [section]
+
+
+def parse_txt_bytes(data, filename):
+    text = decode_bytes(data)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{4,}", "\n\n\n", text).strip()
+
+    chapter_pattern = re.compile(
+        r"(?m)^(Chapter\s+[IVXLC]+\b.*?|Book\s+[IVXLC]+\b.*?|第[一二三四五六七八九十百零〇\d]+章.*?|第[一二三四五六七八九十百零〇\d]+回.*?|第[一二三四五六七八九十百零〇\d]+卷.*?)$",
+        re.I,
+    )
+
+    matches = list(chapter_pattern.finditer(text))
     sections = []
 
-    def flush():
-        nonlocal current_lines, current_chapter, current_book, current_part, current_book_number
+    if len(matches) >= 2:
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
 
-        content = "\n".join(current_lines).strip()
+            section_title = re.sub(r"\s+", " ", match.group(1)).strip()
+            section_text = text[start:end].strip()
 
-        if current_chapter and content:
-            title_parts = []
-            if current_part:
-                title_parts.append(current_part)
-            if current_book:
-                title_parts.append(current_book)
-            title_parts.append(current_chapter)
+            if len(section_text) < 100:
+                continue
 
             sections.append(
                 {
-                    "title": " | ".join(title_parts),
-                    "book_number": current_book_number,
-                    "source": "Project Gutenberg eBook #28054",
-                    "text": content,
+                    "title": section_title,
+                    "book_number": infer_book_number(section_title, section_text, i + 1),
+                    "source": f"Uploaded TXT: {filename}",
+                    "text": section_text,
                 }
             )
-
-        current_lines = []
-
-    for line in lines:
-        s = line.strip()
-
-        part_match = re.match(r"^PART\s+([IVX]+)\.?\s*$", s, re.I)
-        book_match = re.match(r"^Book\s+([IVX]+)\.\s+(.+)$", s, re.I)
-        chapter_match = re.match(r"^Chapter\s+([IVX]+)\.\s+(.+)$", s, re.I)
-
-        if part_match:
-            current_part = s
-            continue
-
-        if book_match:
-            current_book = s
-            current_book_number = roman_to_int(book_match.group(1))
-            continue
-
-        if chapter_match:
-            flush()
-            current_chapter = s
-            continue
-
-        if current_chapter:
-            current_lines.append(line)
-
-    flush()
-
-    if not sections:
-        sections = [
-            {
-                "title": "Full Text Sample",
-                "book_number": 1,
-                "source": "Project Gutenberg eBook #28054",
-                "text": text[:12000],
-            }
-        ]
+    else:
+        max_len = 9000
+        for i in range(0, len(text), max_len):
+            piece = text[i:i + max_len].strip()
+            if len(piece) < 100:
+                continue
+            sections.append(
+                {
+                    "title": f"{filename} | Part {len(sections) + 1}",
+                    "book_number": len(sections) + 1,
+                    "source": f"Uploaded TXT: {filename}",
+                    "text": piece,
+                }
+            )
 
     return sections
 
 
-@st.cache_data(show_spinner=False)
+def parse_epub_bytes(data, filename):
+    sections = []
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception as e:
+        raise ValueError(f"这不是有效的 EPUB 文件：{e}")
+
+    names = zf.namelist()
+
+    opf_path = None
+
+    try:
+        container_xml = zf.read("META-INF/container.xml")
+        root = ET.fromstring(container_xml)
+        for elem in root.iter():
+            if elem.tag.endswith("rootfile"):
+                opf_path = elem.attrib.get("full-path")
+                break
+    except Exception:
+        opf_path = None
+
+    if not opf_path:
+        for name in names:
+            if name.lower().endswith(".opf"):
+                opf_path = name
+                break
+
+    ordered_files = []
+
+    if opf_path:
+        opf_dir = posixpath.dirname(opf_path)
+
+        try:
+            opf_xml = zf.read(opf_path)
+            root = ET.fromstring(opf_xml)
+
+            manifest = {}
+            spine_ids = []
+
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1]
+
+                if tag == "item":
+                    item_id = elem.attrib.get("id")
+                    href = elem.attrib.get("href")
+                    media_type = elem.attrib.get("media-type", "")
+                    if item_id and href:
+                        manifest[item_id] = {
+                            "href": href,
+                            "media_type": media_type,
+                        }
+
+                elif tag == "itemref":
+                    idref = elem.attrib.get("idref")
+                    if idref:
+                        spine_ids.append(idref)
+
+            for idref in spine_ids:
+                item = manifest.get(idref)
+                if not item:
+                    continue
+
+                href = item["href"]
+                media_type = item["media_type"]
+
+                if (
+                    href.lower().endswith((".xhtml", ".html", ".htm"))
+                    or "html" in media_type.lower()
+                ):
+                    full_path = posixpath.normpath(posixpath.join(opf_dir, href))
+                    if full_path in names:
+                        ordered_files.append(full_path)
+
+        except Exception:
+            ordered_files = []
+
+    if not ordered_files:
+        ordered_files = [
+            name for name in names
+            if name.lower().endswith((".xhtml", ".html", ".htm"))
+            and "nav" not in name.lower()
+            and "toc" not in name.lower()
+        ]
+        ordered_files.sort()
+
+    for index, file_path in enumerate(ordered_files):
+        try:
+            raw = decode_bytes(zf.read(file_path))
+        except Exception:
+            continue
+
+        title = extract_title_from_html(raw, f"{filename} | Section {index + 1}")
+        text = html_to_text(raw)
+
+        lower_title = title.lower()
+        lower_path = file_path.lower()
+
+        if "contents" in lower_title or "table of contents" in lower_title:
+            continue
+        if "toc" in lower_path or "nav" in lower_path:
+            continue
+        if len(text) < 120:
+            continue
+
+        section = {
+            "title": title,
+            "book_number": infer_book_number(title, text, index + 1),
+            "source": f"Uploaded EPUB: {filename}",
+            "text": text,
+        }
+
+        sections.extend(split_text_by_chapter_markers(section))
+
+    cleaned = []
+    seen = set()
+
+    for section in sections:
+        key = (section["title"], section["text"][:120])
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(section)
+
+    if not cleaned:
+        raise ValueError("EPUB 读取到了，但没有解析出有效正文。可能是加密 EPUB、扫描版，或格式不标准。")
+
+    return cleaned
+
+
+def load_uploaded_book(uploaded_file):
+    filename = uploaded_file.name
+    data = uploaded_file.read()
+
+    if filename.lower().endswith(".epub"):
+        sections = parse_epub_bytes(data, filename)
+    elif filename.lower().endswith(".txt"):
+        sections = parse_txt_bytes(data, filename)
+    else:
+        raise ValueError("目前只支持 EPUB 和 TXT。")
+
+    if not sections:
+        raise ValueError("没有解析出章节。")
+
+    st.session_state.sections = sections
+    st.session_state.book_loaded = True
+    st.session_state.load_message = f"已从本地上传文件解析：{filename}。共 {len(sections)} 个章节/段落。"
+    return sections
+
+
+# ============================================================
+# 切片与检索
+# ============================================================
+
 def make_chunks(sections):
     chunks = []
 
     for section_index, section in enumerate(sections):
         text = section["text"]
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+        if not paragraphs:
+            paragraphs = [text]
 
         current = ""
         chunk_number = 1
@@ -491,31 +699,6 @@ def make_chunks(sections):
 
     return chunks
 
-
-def load_full_book():
-    raw_text, message = fetch_gutenberg_text()
-
-    if not raw_text:
-        st.session_state.book_loaded = False
-        st.session_state.load_message = message
-        return False, message
-
-    sections = parse_sections(raw_text)
-
-    if not sections:
-        st.session_state.book_loaded = False
-        st.session_state.load_message = "文本读取到了，但章节解析失败。仍保留内置演示资料。"
-        return False, st.session_state.load_message
-
-    st.session_state.sections = sections
-    st.session_state.book_loaded = True
-    st.session_state.load_message = f"已加载完整英文公版文本，共 {len(sections)} 个章节。"
-    return True, st.session_state.load_message
-
-
-# ============================================================
-# 检索
-# ============================================================
 
 def expand_query(query):
     q = query or ""
@@ -659,7 +842,7 @@ def display_chunks(chunks):
 
 def call_ai(system_prompt, user_prompt, temperature=0.35):
     if client is None:
-        return "没有读取到 OpenAI API key。请在 Streamlit Cloud 的 Secrets 里设置 OPENAI_API_KEY。"
+        return "没有读取到 OpenAI API key。请在 Streamlit Cloud 的 Secrets 里设置 OPENAI_API_KEY，或在本地环境变量里设置 OPENAI_API_KEY。"
 
     response = client.chat.completions.create(
         model=st.session_state.model_name,
@@ -850,8 +1033,13 @@ def relationship_text(current_book, spoiler_free, selected_character):
 # 主界面
 # ============================================================
 
+sections = st.session_state.sections
+chunks = make_chunks(sections)
+all_chunks = chunks + st.session_state.extra_chunks
+section_titles = [section["title"] for section in sections]
+
 st.title("📚《卡拉马佐夫兄弟》AI 互动文学档案馆")
-st.caption("The Brothers Karamazov Interactive Literary Archive v1.1 lazy-load")
+st.caption("The Brothers Karamazov Interactive Literary Archive v1.4 local-epub-parser")
 
 with st.sidebar:
     st.header("导航")
@@ -859,7 +1047,7 @@ with st.sidebar:
     page = st.radio(
         "选择页面",
         [
-            "首页 / 文本加载",
+            "首页 / 本地文本加载",
             "阅读助手",
             "人物档案",
             "人物关系图",
@@ -880,44 +1068,53 @@ with st.sidebar:
 
     st.header("文本状态")
     if st.session_state.book_loaded:
-        st.success("已加载完整英文文本")
+        st.success("已加载本地文本")
     else:
         st.warning("当前为内置演示资料")
     st.caption(st.session_state.load_message)
 
 
-sections = st.session_state.sections
-chunks = make_chunks(sections)
-all_chunks = chunks + st.session_state.extra_chunks
-section_titles = [section["title"] for section in sections]
-
-
 # ============================================================
-# Page: Home / Load
+# 首页
 # ============================================================
 
-if page == "首页 / 文本加载":
-    st.subheader("首页 / 文本加载")
+if page == "首页 / 本地文本加载":
+    st.subheader("首页 / 本地文本加载")
 
-    st.write("这个版本不会在网页启动时自动联网下载整本书，所以页面应该能很快打开。")
+    st.write("这个版本优先使用你本地的 EPUB / TXT，不再依赖网上下载。网页会先打开，然后你手动上传文件解析。")
 
     if st.session_state.book_loaded:
-        st.success(f"完整文本已加载。当前共有 {len(sections)} 个章节，{len(chunks)} 个检索片段。")
+        st.success(f"文本已加载。当前共有 {len(sections)} 个章节/段落，{len(chunks)} 个检索片段。")
     else:
-        st.warning("当前使用内置演示资料。你可以先测试 AI 功能，也可以手动加载 Project Gutenberg 英文公版全文。")
+        st.warning("当前使用内置演示资料。请上传你电脑里的 EPUB 或 TXT。")
+
+    st.divider()
+
+    st.markdown("### 上传你的 EPUB / TXT")
+
+    uploaded_file = st.file_uploader(
+        "选择本地文件",
+        type=["epub", "txt"],
+        help="推荐 EPUB。TXT 也可以。文件只在当前 Streamlit 会话中解析，不需要放进 GitHub。",
+    )
 
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("加载 Project Gutenberg 英文全文", type="primary"):
-            with st.spinner("正在下载并解析文本，可能需要几十秒..."):
-                ok, message = load_full_book()
-            if ok:
-                st.success(message)
-                st.rerun()
+        if st.button("读取本地文件", type="primary"):
+            if uploaded_file is None:
+                st.error("你还没有选择文件。请先上传 EPUB 或 TXT。")
             else:
-                st.error(message)
-                st.info("加载失败也没关系，内置演示资料仍然可用。")
+                try:
+                    with st.spinner("正在本地解析文件，EPUB 可能需要几十秒..."):
+                        loaded_sections = load_uploaded_book(uploaded_file)
+
+                    st.success(f"解析成功：共 {len(loaded_sections)} 个章节/段落。")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"解析失败：{e}")
+                    st.info("如果 EPUB 解析失败，可以用 Calibre 把它转换成 TXT 或另一个 EPUB 再试。")
 
     with col2:
         if st.button("恢复内置演示资料"):
@@ -929,16 +1126,25 @@ if page == "首页 / 文本加载":
     st.divider()
 
     st.markdown("### 当前资料状态")
-    st.write(f"章节数量：{len(sections)}")
+    st.write(f"章节/段落数量：{len(sections)}")
     st.write(f"检索片段数量：{len(chunks)}")
+    st.write("Parser version: v1.4 local-epub-parser")
 
     st.markdown("### 当前章节列表预览")
-    for s in sections[:12]:
+    for s in sections[:20]:
         st.write(f"- {s['title']}")
+
+    if len(sections) > 20:
+        st.write(f"... 还有 {len(sections) - 20} 个章节/段落")
+
+    st.divider()
+
+    st.markdown("### 重要提醒")
+    st.write("如果你的 EPUB 是现代中文译本，不建议上传到 GitHub 公开仓库。这个上传功能是在网页运行时临时解析文件，更适合私人阅读和测试。")
 
 
 # ============================================================
-# Page: Reading Assistant
+# 阅读助手
 # ============================================================
 
 elif page == "阅读助手":
@@ -991,7 +1197,7 @@ elif page == "阅读助手":
 
 
 # ============================================================
-# Page: Character Archive
+# 人物档案
 # ============================================================
 
 elif page == "人物档案":
@@ -1042,7 +1248,7 @@ elif page == "人物档案":
 
 
 # ============================================================
-# Page: Relationship Graph
+# 人物关系图
 # ============================================================
 
 elif page == "人物关系图":
@@ -1092,7 +1298,7 @@ elif page == "人物关系图":
 
 
 # ============================================================
-# Page: Theme Panel
+# 主题面板
 # ============================================================
 
 elif page == "主题面板":
@@ -1138,7 +1344,7 @@ elif page == "主题面板":
 
 
 # ============================================================
-# Page: Evidence Search
+# 证据检索
 # ============================================================
 
 elif page == "证据检索":
@@ -1178,7 +1384,7 @@ elif page == "证据检索":
 
 
 # ============================================================
-# Page: Upload
+# 上传补充资料
 # ============================================================
 
 elif page == "上传/扩展资料":
@@ -1226,7 +1432,7 @@ elif page == "上传/扩展资料":
 
 
 # ============================================================
-# Page: History
+# 历史导出
 # ============================================================
 
 elif page == "分析历史/导出":
@@ -1258,7 +1464,7 @@ elif page == "分析历史/导出":
 
 
 # ============================================================
-# Page: Project Intro
+# 项目说明
 # ============================================================
 
 elif page == "项目说明":
@@ -1266,20 +1472,22 @@ elif page == "项目说明":
 
     st.markdown(
         """
-这是一个基于 **Streamlit + OpenAI API + Project Gutenberg 英文公版文本** 的《卡拉马佐夫兄弟》互动文学档案馆。
+这是一个基于 **Streamlit + OpenAI API + 本地 EPUB/TXT 上传** 的《卡拉马佐夫兄弟》互动文学档案馆。
 
-这个版本是 **v1.1 lazy-load 稳定版**：
+这个版本是 **v1.4 local-epub-parser 本地文本版**。
 
-- 启动时不会自动下载整本书；
-- 页面会先打开；
-- 你可以手动点击“加载 Project Gutenberg 英文全文”；
-- 如果全文加载失败，内置演示资料仍然可以使用；
-- AI 回答默认为中文；
-- 底层证据片段为英文或你的补充资料。
+它不会自动下载 Project Gutenberg，也不会在启动时联网读取整本书。
+
+使用方式：
+
+1. 在首页上传你电脑里的 EPUB 或 TXT；
+2. 点击“读取本地文件”；
+3. 等待解析成功；
+4. 进入阅读助手、人物档案、证据检索等页面使用。
 
 功能包括：
 
-- 首页 / 文本加载
+- 首页 / 本地文本加载
 - 阅读助手
 - 人物档案
 - 人物关系图
